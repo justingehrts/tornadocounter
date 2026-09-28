@@ -8,8 +8,12 @@ import streamlit as st
 from tornado_data import (
     get_dat_tornadoes,
     get_states,
+    get_counties,
     assign_states,
+    assign_counties,
     create_counts,
+    build_detail_table,
+    get_tornado_photos,
 )
 
 # States too small/crowded to hold a label at their true location get
@@ -28,6 +32,9 @@ SMALL_STATE_LABEL_OFFSETS = {
     "DC": (33.8, -66.8),
 }
 
+TABLE_KEY = "state_table"
+MAP_KEY = "state_map"
+
 
 def build_choropleth(result, states):
     fig = px.choropleth(
@@ -38,6 +45,7 @@ def build_choropleth(result, states):
         scope="usa",
         hover_name="NAME",
         hover_data={"STUSPS": False, "tornadoes": True},
+        custom_data=["STUSPS", "NAME"],
         labels={"tornadoes": "Tornadoes"},
         color_continuous_scale="Blues",
     )
@@ -110,22 +118,44 @@ def build_choropleth(result, states):
 
     return fig
 
+
+def on_table_select():
+    rows = st.session_state[TABLE_KEY]["selection"]["rows"]
+    if rows:
+        st.session_state["selected_state"] = (
+            st.session_state["result"]["STUSPS"].iloc[rows[0]]
+        )
+
+
+def on_map_select():
+    points = st.session_state[MAP_KEY]["selection"]["points"]
+    if points:
+        st.session_state["selected_state"] = points[0]["customdata"][0]
+
+
 st.set_page_config(page_title="Tornado Counts by State", layout="wide")
 
-# DAT survey data is actively revised, so cache it briefly. State
-# boundaries are a large, static file, so cache them for the session.
+# DAT survey data is actively revised, so cache it briefly. State and
+# county boundaries are large, static files, so cache them for the
+# session. Photo lookups are cheap to repeat but pointless to re-fetch
+# on every rerun, so they're cached too.
 get_dat_tornadoes = st.cache_data(
     ttl=900, show_spinner="Querying NWS Damage Assessment Toolkit..."
 )(get_dat_tornadoes)
 get_states = st.cache_data(
     ttl=None, show_spinner="Downloading U.S. state boundaries..."
 )(get_states)
+get_counties = st.cache_data(
+    ttl=None, show_spinner="Downloading U.S. county boundaries..."
+)(get_counties)
+get_tornado_photos = st.cache_data(ttl=None, show_spinner=False)(get_tornado_photos)
 
 st.title("Tornado Counts by State")
 st.caption(
     "Surveyed NWS tornadoes per state for a selected date range, from the "
     "Damage Assessment Toolkit. A tornado track that crosses a state line "
-    "is counted once for each state it touches."
+    "is counted once for each state it touches. Click a state in the "
+    "table or on the map to see its individual tornadoes."
 )
 
 today = date.today()
@@ -144,11 +174,29 @@ if st.button("Get counts", type="primary"):
     try:
         tornadoes = get_dat_tornadoes(start_date, end_date)
         states = get_states()
+        counties = get_counties()
         intersections = assign_states(tornadoes, states)
+        county_touches = assign_counties(tornadoes, counties, states)
         result = create_counts(intersections, states)
     except requests.RequestException as exc:
         st.error(f"Failed to reach the NWS DAT service: {exc}")
         st.stop()
+
+    st.session_state.update(
+        tornadoes=tornadoes,
+        states=states,
+        intersections=intersections,
+        county_touches=county_touches,
+        result=result,
+        selected_state=None,
+    )
+
+if "result" in st.session_state:
+    tornadoes = st.session_state["tornadoes"]
+    states = st.session_state["states"]
+    intersections = st.session_state["intersections"]
+    county_touches = st.session_state["county_touches"]
+    result = st.session_state["result"]
 
     total = int(result["tornadoes"].sum())
 
@@ -160,8 +208,59 @@ if st.button("Get counts", type="primary"):
     table_col, map_col = st.columns([1, 2])
 
     with table_col:
-        st.dataframe(result, hide_index=True, use_container_width=True)
+        display_result = result.rename(
+            columns={"NAME": "State", "tornadoes": "Tornadoes"}
+        )[["State", "Tornadoes"]]
+        st.dataframe(
+            display_result,
+            hide_index=True,
+            use_container_width=True,
+            on_select=on_table_select,
+            selection_mode="single-row",
+            key=TABLE_KEY,
+        )
 
     with map_col:
         fig = build_choropleth(result, states)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            on_select=on_map_select,
+            selection_mode="points",
+            key=MAP_KEY,
+        )
+
+    selected = st.session_state.get("selected_state")
+
+    if selected:
+        state_name = states.set_index("STUSPS").loc[selected, "NAME"]
+        event_ids = intersections.loc[
+            intersections["STUSPS"] == selected, "event_id"
+        ]
+        detail_source = tornadoes[tornadoes["event_id"].isin(event_ids)]
+
+        st.subheader(f"Tornadoes in {state_name}")
+
+        if detail_source.empty:
+            st.caption("No surveyed tornadoes for this state in the selected range.")
+        else:
+            detail = build_detail_table(detail_source, county_touches)
+
+            for _, row in detail.iterrows():
+                with st.expander(f"{row['Date']} — {row['EF Rating']} — {row['Counties']}"):
+                    st.table(
+                        row.drop(["event_id", "objectid"]).rename("Value")
+                    )
+                    if st.button(
+                        "Load photos", key=f"photos_{row['objectid']}"
+                    ):
+                        photos = get_tornado_photos(
+                            row["event_id"], row["objectid"]
+                        )
+                        if not photos:
+                            st.caption("No photos available for this survey.")
+                        for photo in photos:
+                            if (photo["content_type"] or "").startswith("image/"):
+                                st.image(photo["url"], caption=photo["name"])
+                            else:
+                                st.markdown(f"[{photo['name']}]({photo['url']})")
