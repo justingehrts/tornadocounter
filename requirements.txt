@@ -1,0 +1,7 @@
+streamlit>=1.32
+requests>=2.31
+geopandas>=0.14
+shapely>=2.0
+pandas>=2.0
+plotly>=5.18
+pyogrio>=0.7
