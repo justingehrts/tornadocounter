@@ -40,12 +40,17 @@ DAT_CORE_FIELDS = [
 DAT_EXTENDED_FIELDS = [
     "objectid", "wfo", "fatalities", "injuries",
     "maxwind", "cropdamage", "propdamage",
+    "starttime", "endtime", "comments",
 ]
 DAT_FIELDS = DAT_CORE_FIELDS + DAT_EXTENDED_FIELDS
 
 # Detail-table column labels and formatting, keyed by the DAT field name.
+# "comments" (the survey narrative) is deliberately not listed here - it's
+# long-form text, shown separately rather than as a table row.
 DETAIL_COLUMN_LABELS = {
     "stormdate": "Date",
+    "starttime": "Start Time (UTC)",
+    "endtime": "End Time (UTC)",
     "efscale": "EF Rating",
     "length": "Path Length (mi)",
     "width": "Path Width (yd)",
@@ -365,6 +370,21 @@ def get_tornado_photos(event_id, line_objectid):
     return combined
 
 
+def fetch_attachment_bytes(url):
+    """
+    Download an attachment's raw bytes, or None on failure. Downloading
+    server-side (rather than handing the URL straight to st.image, which
+    fetches it client-side in the browser) uses the same requests session
+    that's already proven able to reach this server for queries.
+    """
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.content
+    except requests.RequestException:
+        return None
+
+
 # ------------------------------------------------------------
 # Build the per-tornado detail table for a selected state
 # ------------------------------------------------------------
@@ -381,25 +401,57 @@ def _format_number(value):
     return str(int(value)) if float(value).is_integer() else f"{value:g}"
 
 
-def _format_date(value):
+def _to_timestamp(value):
+    """
+    DAT date/time fields have come back as epoch-milliseconds integers
+    rather than ISO strings, despite querying with f=geojson. Treating a
+    millisecond value as nanoseconds (pandas' default for a bare number)
+    collapses any real date to just after 1970-01-01, so the unit has to
+    be set explicitly whenever the value is numeric.
+    """
     if pd.isna(value):
-        return "—"
+        return None
     try:
-        return pd.to_datetime(value).date().isoformat()
+        if isinstance(value, (int, float)):
+            return pd.to_datetime(value, unit="ms")
+        return pd.to_datetime(value)
     except (ValueError, TypeError):
-        return str(value)
+        return None
+
+
+def _format_date(value):
+    ts = _to_timestamp(value)
+    if ts is not None:
+        return ts.date().isoformat()
+    return "—" if pd.isna(value) else str(value)
+
+
+def _format_datetime_utc(value):
+    ts = _to_timestamp(value)
+    if ts is not None:
+        return ts.strftime("%Y-%m-%d %H:%M UTC")
+    return "—" if pd.isna(value) else str(value)
 
 
 def build_detail_table(tornadoes_subset, county_touches):
     columns = list(DETAIL_COLUMN_LABELS)
 
-    detail = tornadoes_subset[["event_id", "objectid"] + columns].copy()
+    detail = tornadoes_subset[["event_id", "objectid", "comments"] + columns].copy()
 
     detail["counties"] = detail["event_id"].map(
         counties_by_event(county_touches)
     ).fillna("—")
 
+    detail["Narrative"] = detail["comments"].apply(
+        lambda value: str(value) if pd.notna(value) and str(value).strip()
+        else "No narrative available."
+    )
+    detail = detail.drop(columns=["comments"])
+
     detail["stormdate"] = detail["stormdate"].apply(_format_date)
+
+    for field in ("starttime", "endtime"):
+        detail[field] = detail[field].apply(_format_datetime_utc)
 
     for field in CURRENCY_FIELDS:
         detail[field] = pd.to_numeric(detail[field], errors="coerce").apply(_format_currency)

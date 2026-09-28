@@ -14,7 +14,16 @@ from tornado_data import (
     create_counts,
     build_detail_table,
     get_tornado_photos,
+    fetch_attachment_bytes,
 )
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+
+
+def _looks_like_image(photo):
+    content_type = (photo["content_type"] or "").lower()
+    name = (photo["name"] or "").lower()
+    return content_type.startswith("image/") or name.endswith(IMAGE_EXTENSIONS)
 
 # States too small/crowded to hold a label at their true location get
 # their count pulled out to a stacked column over the Atlantic, with a
@@ -149,6 +158,7 @@ get_counties = st.cache_data(
     ttl=None, show_spinner="Downloading U.S. county boundaries..."
 )(get_counties)
 get_tornado_photos = st.cache_data(ttl=None, show_spinner=False)(get_tornado_photos)
+fetch_attachment_bytes = st.cache_data(ttl=None, show_spinner=False)(fetch_attachment_bytes)
 
 st.title("Tornado Counts by State")
 st.caption(
@@ -249,8 +259,12 @@ if "result" in st.session_state:
             for _, row in detail.iterrows():
                 with st.expander(f"{row['Date']} — {row['EF Rating']} — {row['Counties']}"):
                     st.table(
-                        row.drop(["event_id", "objectid"]).rename("Value")
+                        row.drop(["event_id", "objectid", "Narrative"]).rename("Value")
                     )
+
+                    with st.expander("Narrative", expanded=False):
+                        st.write(row["Narrative"])
+
                     if st.button(
                         "Load photos", key=f"photos_{row['objectid']}"
                     ):
@@ -260,7 +274,11 @@ if "result" in st.session_state:
                         if not photos:
                             st.caption("No photos available for this survey.")
                         for photo in photos:
-                            if (photo["content_type"] or "").startswith("image/"):
-                                st.image(photo["url"], caption=photo["name"])
+                            if _looks_like_image(photo):
+                                data = fetch_attachment_bytes(photo["url"])
+                                if data:
+                                    st.image(data, caption=photo["name"])
+                                else:
+                                    st.warning(f"Could not load photo: {photo['name']}")
                             else:
                                 st.markdown(f"[{photo['name']}]({photo['url']})")
