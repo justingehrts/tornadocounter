@@ -18,6 +18,7 @@ from tornado_data import (
 )
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+PHOTO_GRID_COLUMNS = 4
 
 
 def _looks_like_image(photo):
@@ -273,12 +274,23 @@ if "result" in st.session_state:
                         )
                         if not photos:
                             st.caption("No photos available for this survey.")
-                        for photo in photos:
-                            if _looks_like_image(photo):
-                                data = fetch_attachment_bytes(photo["url"])
-                                if data:
-                                    st.image(data, caption=photo["name"])
-                                else:
-                                    st.warning(f"Could not load photo: {photo['name']}")
-                            else:
+                        else:
+                            image_photos = [p for p in photos if _looks_like_image(p)]
+                            other_photos = [p for p in photos if not _looks_like_image(p)]
+
+                            for i in range(0, len(image_photos), PHOTO_GRID_COLUMNS):
+                                row_photos = image_photos[i:i + PHOTO_GRID_COLUMNS]
+                                for col, photo in zip(st.columns(PHOTO_GRID_COLUMNS), row_photos):
+                                    with col:
+                                        data = fetch_attachment_bytes(photo["url"])
+                                        if data:
+                                            st.image(
+                                                data,
+                                                caption=photo["name"],
+                                                use_container_width=True,
+                                            )
+                                        else:
+                                            st.warning(f"Could not load: {photo['name']}")
+
+                            for photo in other_photos:
                                 st.markdown(f"[{photo['name']}]({photo['url']})")
