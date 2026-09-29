@@ -1,3 +1,4 @@
+import concurrent.futures
 from datetime import date
 
 import plotly.express as px
@@ -19,6 +20,7 @@ from tornado_data import (
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 PHOTO_GRID_COLUMNS = 4
+PHOTO_FETCH_WORKERS = 6
 
 
 def _looks_like_image(photo):
@@ -278,19 +280,39 @@ if "result" in st.session_state:
                             image_photos = [p for p in photos if _looks_like_image(p)]
                             other_photos = [p for p in photos if not _looks_like_image(p)]
 
+                            # Pre-create every grid cell, then fetch all
+                            # photos concurrently and fill each cell in as
+                            # soon as its download finishes, rather than
+                            # downloading one at a time and blocking the
+                            # whole grid on the slowest-to-load photo.
+                            placeholders = {}
                             for i in range(0, len(image_photos), PHOTO_GRID_COLUMNS):
                                 row_photos = image_photos[i:i + PHOTO_GRID_COLUMNS]
                                 for col, photo in zip(st.columns(PHOTO_GRID_COLUMNS), row_photos):
                                     with col:
-                                        data = fetch_attachment_bytes(photo["url"])
-                                        if data:
-                                            st.image(
-                                                data,
-                                                caption=photo["name"],
-                                                use_container_width=True,
-                                            )
-                                        else:
-                                            st.warning(f"Could not load: {photo['name']}")
+                                        placeholder = st.empty()
+                                        placeholder.text(f"Loading {photo['name']}...")
+                                        placeholders[photo["url"]] = placeholder
+
+                            with concurrent.futures.ThreadPoolExecutor(
+                                max_workers=PHOTO_FETCH_WORKERS
+                            ) as executor:
+                                future_to_photo = {
+                                    executor.submit(fetch_attachment_bytes, photo["url"]): photo
+                                    for photo in image_photos
+                                }
+                                for future in concurrent.futures.as_completed(future_to_photo):
+                                    photo = future_to_photo[future]
+                                    placeholder = placeholders[photo["url"]]
+                                    data = future.result()
+                                    if data:
+                                        placeholder.image(
+                                            data,
+                                            caption=photo["name"],
+                                            use_container_width=True,
+                                        )
+                                    else:
+                                        placeholder.warning(f"Could not load: {photo['name']}")
 
                             for photo in other_photos:
                                 st.markdown(f"[{photo['name']}]({photo['url']})")
