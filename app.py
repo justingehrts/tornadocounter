@@ -128,6 +128,17 @@ def build_choropleth(result, states):
         margin=dict(l=0, r=0, t=0, b=0),
     )
 
+    # Clicking a state to open its drilldown also triggers Plotly's
+    # built-in selection dimming, fading every other state (and their
+    # count labels) with no way to reset it from this app. The
+    # subheader/detail section below is already the "you selected this"
+    # feedback, so force full opacity in both states everywhere instead.
+    fig.update_traces(
+        selector=dict(type="choropleth"),
+        selected=dict(marker=dict(opacity=1)),
+        unselected=dict(marker=dict(opacity=1)),
+    )
+
     return fig
 
 
@@ -146,6 +157,31 @@ def on_map_select():
 
 
 st.set_page_config(page_title="Tornado Counts by State", layout="wide")
+
+# Streamlit's built-in fullscreen-expand button on images is easy to
+# miss - enlarge it. The toolbar is a *sibling* of stImage inside their
+# shared stElementContainer (not a descendant of stImage), so scoping
+# requires :has() on the shared ancestor rather than a plain descendant
+# selector - otherwise this matches nothing. Scoped this way (rather
+# than a bare stElementToolbarButton selector) so chart/dataframe
+# toolbars, which reuse the same component, aren't also enlarged.
+st.markdown(
+    """
+    <style>
+    div[data-testid="stElementContainer"]:has(div[data-testid="stImage"])
+            [data-testid="stElementToolbarButton"] {
+        width: 2.25rem;
+        height: 2.25rem;
+    }
+    div[data-testid="stElementContainer"]:has(div[data-testid="stImage"])
+            [data-testid="stElementToolbarButtonIcon"] svg {
+        width: 1.5rem;
+        height: 1.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # DAT survey data is actively revised, so cache it briefly. State and
 # county boundaries are large, static files, so cache them for the
