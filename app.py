@@ -174,7 +174,7 @@ st.markdown(
         height: 2.25rem;
     }
     div[data-testid="stElementContainer"]:has(div[data-testid="stImage"])
-            [data-testid="stElementToolbarButtonIcon"] svg {
+            svg[data-testid="stElementToolbarButtonIcon"] {
         width: 1.5rem;
         height: 1.5rem;
     }
