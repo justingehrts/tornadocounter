@@ -114,11 +114,21 @@ def get_dat_tornadoes(start_date, end_date):
         props = feature.get("properties", {})
         geom = feature.get("geometry")
 
-        if not props.get("event_id") or not geom:
+        if not geom:
             continue
+
+        # About a quarter of 2026's real records have a blank event_id
+        # (and a few share a non-unique one, e.g. "1") - skipping or
+        # collapsing those by event_id silently discarded hundreds of
+        # genuinely distinct tornadoes. Fall back to the one field
+        # that's always present and unique (objectid) so every row
+        # downstream that keys off event_id - including this
+        # function's own dedup below - treats each tornado as distinct.
+        event_id = props.get("event_id") or f"DAT-{props.get('objectid')}"
 
         features.append({
             **props,
+            "event_id": event_id,
             "geometry": shape(geom)
         })
 
@@ -143,10 +153,15 @@ def get_dat_tornadoes(start_date, end_date):
         columns=DAT_FIELDS + ["geometry"], fill_value=pd.NA
     )
 
-    # DAT should normally have one damage line per event, but
-    # make sure we don't accidentally count duplicate event IDs.
+    # Guard against the query somehow returning the same feature twice.
+    # Dedup on objectid, not event_id: a real 2026 nationwide pull shows
+    # roughly 1 in 4 tornadoes has a blank event_id (and a handful of
+    # others share a non-unique one, e.g. "1"), so deduping on event_id
+    # silently collapsed hundreds of genuinely distinct tornadoes down
+    # to one. objectid is the service's actual unique row identifier -
+    # always present, always unique.
     tornadoes = tornadoes.drop_duplicates(
-        subset="event_id"
+        subset="objectid"
     )
 
     print(f"Found {len(tornadoes)} tornado events.")
