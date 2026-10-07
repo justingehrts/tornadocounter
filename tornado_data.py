@@ -183,6 +183,16 @@ def get_states():
         BytesIO(response.content)
     )
 
+    # Census ships this in NAD83 (EPSG:4269); DAT's geometry is WGS84
+    # (EPSG:4326, requested via outSR in get_dat_tornadoes). sjoin
+    # against mismatched CRSs silently compares raw coordinates as if
+    # they were the same system, which is wrong even though the two
+    # systems are close enough in the continental US that it rarely
+    # flips a result - reproject at the source so every consumer of
+    # this GeoDataFrame (assign_states, the map's representative_point
+    # anchors, etc.) is consistently in WGS84.
+    states = states.to_crs(epsg=4326)
+
     # Remove territories and other areas that we don't want
     # in the state-by-state count.
     states = states[
@@ -271,6 +281,11 @@ def get_counties():
     counties = gpd.read_file(
         BytesIO(response.content)
     )
+
+    # Same NAD83 -> WGS84 reprojection as get_states(), for the same
+    # reason: DAT geometry is WGS84, and assign_counties sjoins against
+    # this directly.
+    counties = counties.to_crs(epsg=4326)
 
     return counties[["STATEFP", "NAME", "NAMELSAD", "geometry"]].copy()
 
